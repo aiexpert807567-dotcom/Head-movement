@@ -277,13 +277,29 @@
    * trailing quality.
    * ---------------------------------------------------------------------
    */
-  var SMOOTHING = 0.08;      // lower = more trailing/cinematic, higher = snappier
+  // TIME_CONSTANT: how eagerly small cursor moves are followed. Bigger
+  // = lazier/more cinematic trailing on ordinary, moderate mouse moves.
+  var TIME_CONSTANT = 0.20; // seconds
+  // MAX_TURN_RATE: a hard speed limit, in video-seconds advanced per
+  // real second. This is the actual fix for the "she's already fully
+  // turned by the time the cursor reaches the middle" problem: a plain
+  // percentage catch-up (old code: displayedTime += delta * 0.08) takes
+  // its biggest step on the very first frame after a fast mouse flick,
+  // which can jump most of the way across the LEFT<->RIGHT turn
+  // instantly - skipping over the in-between turning frames instead of
+  // playing through them. Capping the rate means a fast flick still
+  // starts the catch-up immediately, but the video is forced to
+  // actually play through its own footage at close to its natural
+  // turning speed, the same head-turn the camera actually recorded,
+  // rather than jump-cutting to the destination pose.
+  var MAX_TURN_RATE = 1.6; // 1.0 = exactly real-time; >1 stays responsive without jump-cutting
   var SETTLE_EPSILON = 0.004; // stop nudging currentTime once this close (avoids needless seeks)
 
   var targetTime = active.LEFT_START_TIME;
   var displayedTime = active.LEFT_START_TIME;
   var hasInteracted = false;
   var rafId = null;
+  var lastFrameAt = null;
 
   function setCursorProgress(clientX){
     var progress = clientX / window.innerWidth;
@@ -294,10 +310,20 @@
     }
   }
 
-  function tick(){
+  function tick(timestampMs){
+    if (lastFrameAt === null) lastFrameAt = timestampMs;
+    // Clamp dt so a backgrounded tab / dropped frames can't produce one
+    // huge catch-up step when the page regains focus.
+    var dt = Math.min((timestampMs - lastFrameAt) / 1000, 0.1);
+    lastFrameAt = timestampMs;
+
     var delta = targetTime - displayedTime;
-    if (Math.abs(delta) > SETTLE_EPSILON){
-      displayedTime += delta * SMOOTHING;
+    if (Math.abs(delta) > SETTLE_EPSILON && dt > 0){
+      var easeStep = delta * (1 - Math.exp(-dt / TIME_CONSTANT));
+      var maxStep = MAX_TURN_RATE * dt;
+      if (easeStep > maxStep) easeStep = maxStep;
+      if (easeStep < -maxStep) easeStep = -maxStep;
+      displayedTime += easeStep;
       // Guard against seeking past a video that hasn't buffered enough yet.
       if (video.readyState >= 2){
         video.currentTime = displayedTime;
